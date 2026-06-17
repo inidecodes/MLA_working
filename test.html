@@ -100,7 +100,7 @@
     <div class="d-flex justify-content-between align-items-center mb-4">
         <div class="logo-box"><i class="fa-solid fa-wand-magic-sparkles me-2"></i>MLA AI Engine</div>
         <div id="headerActions" class="d-flex align-items-center">
-            <span class="badge bg-dark border border-secondary text-success px-3 py-2"><i class="fa-solid fa-shield-halved me-1"></i> Multilingual Engine Connected</span>
+            <span class="badge bg-dark border border-secondary text-success px-3 py-2"><i class="fa-solid fa-shield-halved me-1"></i> Live Loop Stable</span>
         </div>
     </div>
 
@@ -171,7 +171,7 @@
         <div class="row g-3 align-items-end">
             <div class="col-md-4">
                 <label class="small text-muted mb-1">Identified Source Accent</label>
-                <select class="form-select translate-select" id="translateFromSelect"><option value="">Auto Detected</option></select>
+                <select class="form-select translate-select" id="translateFromSelect" disabled><option value="">Auto Detected</option></select>
             </div>
             <div class="col-md-4">
                 <label class="small text-muted mb-1">Target Language Node</label>
@@ -191,68 +191,8 @@
     let isRecordingLive = false;
     let isPaused = false;
     let explicitStopActive = false;
+    let recognition = null; 
     let globalFinalTranscript = ""; 
-
-    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-    let recognition = SpeechRecognition ? new SpeechRecognition() : null;
-
-    // FIX: Provision configurations safely ONCE to avoid duplicate overlapping event listeners
-    if (recognition) {
-        recognition.continuous = true;
-        recognition.interimResults = true;
-        
-        recognition.onstart = () => {
-            isRecordingLive = true;
-            transcribeBtn.innerHTML = '<i class="fa-solid fa-circle-stop"></i> Stop & Save';
-            transcribeBtn.style.backgroundColor = "#dc2626";
-            pauseBtn.disabled = false;
-            appStatus.innerHTML = `<span class="text-success"><i class="fa-solid fa-microphone fa-pulse"></i> Engine tracking locked in [${recognition.lang}]... Speak now.</span>`;
-        };
-
-        recognition.onresult = (event) => {
-            if (isPaused) return; 
-            let interimBuffer = "";
-            let newlyFinalizedText = "";
-            
-            for (let i = event.resultIndex; i < event.results.length; ++i) {
-                const resultChunk = event.results[i][0].transcript;
-                if (event.results[i].isFinal) {
-                    newlyFinalizedText += resultChunk + " ";
-                } else {
-                    interimBuffer += resultChunk;
-                }
-            }
-            if (newlyFinalizedText) {
-                globalFinalTranscript += newlyFinalizedText;
-            }
-            let totalCombinedText = globalFinalTranscript + interimBuffer;
-            txtTranscript.value = totalCombinedText.trim();
-            txtTranscript.scrollTop = txtTranscript.scrollHeight; 
-        };
-
-        recognition.onerror = (err) => {
-            console.error("Audio Interface Stream warning:", err.error);
-            if (err.error === 'not-allowed') {
-                appStatus.innerHTML = `<span class="text-danger"><i class="fa-solid fa-hand"></i> Mic Blocked! Provide permission inside address bar origin configs.</span>`;
-                explicitStopActive = true;
-                recognition.stop();
-            }
-        };
-
-        recognition.onend = () => {
-            if (!explicitStopActive && !isPaused) {
-                setTimeout(() => {
-                    if (!explicitStopActive && !isPaused) {
-                        try {
-                            recognition.start();
-                        } catch (e) {}
-                    }
-                }, 300);
-            } else if (explicitStopActive) {
-                finalizeSessionCapture();
-            }
-        };
-    }
 
     const fileInput = document.getElementById('actualFileInput');
     const uploadBtnTrigger = document.getElementById('btnUploadTrigger');
@@ -283,7 +223,6 @@
             const data = await res.json();
             participantSelect.innerHTML = '<option value="">Select Group</option>';
             data.participants.forEach(p => { participantSelect.innerHTML += `<option value="${p}">${p}</option>`; });
-            
             translateFromSelect.innerHTML = '<option value="">Auto Detected</option>';
             translateToSelect.innerHTML = '<option value="">Select Target Language</option>';
             data.languages.forEach(l => {
@@ -292,7 +231,7 @@
             });
             appStatus.innerHTML = '<span class="text-success"><i class="fa-solid fa-circle-check"></i> System configuration matrices synchronized perfectly.</span>';
         } catch (err) {
-            appStatus.innerHTML = `<span class="text-danger"><i class="fa-solid fa-triangle-exclamation"></i> Backend server communication down. Ensure main.py runs on port 8000.</span>`;
+            appStatus.innerHTML = `<span class="text-danger"><i class="fa-solid fa-triangle-exclamation"></i> Backend application server communication links down. Run uvicorn application module.</span>`;
         }
     });
 
@@ -319,12 +258,81 @@
     }
     participantSelect.addEventListener('change', evaluateStateLocks);
 
+    function provisionStreamingEngine() {
+        const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+        if (!SpeechRecognition) {
+            alert("Speech recognition is not fully configured on this browser client. Please use Google Chrome.");
+            return;
+        }
+
+        recognition = new SpeechRecognition();
+        recognition.continuous = true;
+        recognition.interimResults = true;
+        recognition.lang = micLanguageSelect.value; 
+
+        recognition.onstart = () => {
+            isRecordingLive = true;
+            transcribeBtn.innerHTML = '<i class="fa-solid fa-circle-stop"></i> Stop & Save';
+            transcribeBtn.style.backgroundColor = "#dc2626";
+            pauseBtn.disabled = false;
+            appStatus.innerHTML = `<span class="text-warning"><i class="fa-solid fa-record-vinyl fa-spin"></i> Infinite listening live. Profiling accent [${recognition.lang}]... Continuous tracking loop active.</span>`;
+        };
+
+        recognition.onresult = (event) => {
+            if (isPaused) return; 
+            
+            let interimBuffer = "";
+            let localFinalText = "";
+            
+            for (let i = event.resultIndex; i < event.results.length; ++i) {
+                if (event.results[i].isFinal) {
+                    localFinalText += event.results[i][0].transcript + " ";
+                } else {
+                    interimBuffer += event.results[i][0].transcript;
+                }
+            }
+            
+            if (localFinalText) {
+                globalFinalTranscript += localFinalText;
+            }
+            
+            txtTranscript.value = (globalFinalTranscript + interimBuffer).trim();
+        };
+
+        recognition.onerror = (err) => {
+            if (err.error !== 'no-speech' && err.error !== 'aborted') {
+                console.warn("Acoustic stream warning flag intercepted: ", err.error);
+            }
+        };
+
+        recognition.onend = async () => {
+            if (!explicitStopActive && !isPaused) {
+                console.log("System silence or natural pause timeout detected. Reviving connection state cleanly...");
+                try {
+                    recognition.lang = micLanguageSelect.value;
+                    recognition.start();
+                } catch (e) {
+                    console.error("Failed to cleanly auto-restart tracking matrix.", e);
+                }
+            } 
+            else if (explicitStopActive) {
+                isRecordingLive = false;
+                pauseBtn.disabled = true;
+                transcribeBtn.disabled = true;
+                transcribeBtn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> Persisting Session Logs...';
+                
+                if (txtTranscript.value.trim()) {
+                    await sendStreamPayloadToBackend(txtTranscript.value);
+                } else {
+                    alert("Zero text processed inside live dictation buffer.");
+                    evaluateStateLocks();
+                }
+            }
+        };
+    }
+
     transcribeBtn.addEventListener('click', async () => {
         if (fileInput.files.length === 0) {
-            if (!recognition) {
-                appStatus.innerHTML = '<span class="text-danger"><i class="fa-solid fa-ban"></i> Web Speech API not supported in this browser.</span>';
-                return;
-            }
             if (!isRecordingLive) {
                 explicitStopActive = false;
                 isPaused = false;
@@ -333,12 +341,12 @@
                 pauseBtn.innerHTML = '<i class="fa-solid fa-pause"></i> Pause';
                 pauseBtn.className = "control-btn btn-pause";
                 
-                recognition.lang = micLanguageSelect.value;
-                try { recognition.start(); } catch(e){}
+                provisionStreamingEngine();
+                recognition.start();
             } else {
                 explicitStopActive = true;
                 isPaused = false;
-                try { recognition.stop(); } catch(e){}
+                recognition.stop();
             }
         } else {
             transcribeBtn.disabled = true;
@@ -348,22 +356,21 @@
     });
 
     pauseBtn.addEventListener('click', () => {
-        if (!isRecordingLive || !recognition) return;
+        if (!isRecordingLive) return;
         
         if (!isPaused) {
             isPaused = true;
             pauseBtn.innerHTML = '<i class="fa-solid fa-play"></i> Resume';
             pauseBtn.className = "control-btn btn-success";
-            appStatus.innerHTML = '<span class="text-info"><i class="fa-solid fa-pause"></i> Tracking Paused. Recording suspended manually.</span>';
-            try { recognition.stop(); } catch(e){}
+            appStatus.innerHTML = '<span class="text-info"><i class="fa-solid fa-pause"></i> Tracking Paused. Recording suspended.</span>';
+            recognition.stop();
         } else {
             isPaused = false;
             pauseBtn.innerHTML = '<i class="fa-solid fa-pause"></i> Pause';
             pauseBtn.className = "control-btn btn-pause";
-            appStatus.innerHTML = '<span class="text-success"><i class="fa-solid fa-microphone fa-pulse"></i> Resuming loop tracking matrix...</span>';
-            
-            recognition.lang = micLanguageSelect.value;
-            try { recognition.start(); } catch(e){}
+            appStatus.innerHTML = '<span class="text-warning"><i class="fa-solid fa-record-vinyl fa-spin"></i> Resuming infinite live tracking audio stream...</span>';
+            provisionStreamingEngine();
+            recognition.start();
         }
     });
 
@@ -371,19 +378,20 @@
         const formData = new FormData();
         formData.append("text_content", textData);
         formData.append("participant_group", participantSelect.value);
-        formData.append("translate_from", "ENGLISH"); // Default for web speech API raw text maps
+        
+        // Pass language code over to the server to populate dropdown tables safely
+        formData.append("translate_from", micLanguageSelect.value);
+
         try {
             const res = await fetch(`${API_URL}/api/transcribe-stream`, { method: 'POST', body: formData });
-            if (!res.ok) { throw new Error(res.status); }
             const data = await res.json();
             currentRequestId = data.request_id;
-            translateFromSelect.value = ""; // Clear or manually choose options
+            translateFromSelect.value = "ENGLISH";
             momBtn.disabled = false; goBtn.disabled = false;
-            appStatus.innerHTML = `<span class="text-success"><i class="fa-solid fa-circle-check"></i> Live Multi-language Text Ingested. ID: ${currentRequestId}</span>`;
+            appStatus.innerHTML = `<span class="text-success"><i class="fa-solid fa-circle-check"></i> Data Saved. Request Tracking Reference ID Key: ${currentRequestId}</span>`;
         } catch (err) {
-            appStatus.innerHTML = '<span class="text-danger"><i class="fa-solid fa-circle-xmark"></i> Ingestion workflow error. Verify backend availability.</span>';
-        } 
-        evaluateStateLocks();
+            appStatus.innerHTML = '<span class="text-danger"><i class="fa-solid fa-circle-xmark"></i> Ingestion workflow error. Verify network availability.</span>';
+        } evaluateStateLocks();
     }
 
     async function runAsynchronousFilePipeline(fileObj, sType) {
@@ -393,92 +401,52 @@
         formData.append("source_type", sType);
         try {
             const res = await fetch(`${API_URL}/api/transcribe`, { method: 'POST', body: formData });
-            if (!res.ok) { throw new Error(res.status); }
             const data = await res.json();
             currentRequestId = data.request_id;
             txtTranscript.value = data.transcription;
-            
-            // FIX: Helper to map upper shortcodes to database layout values cleanly
-            const languageMap = { "EN": "English", "HI": "Hindi", "TA": "Tamil", "TE": "Telugu" };
-            translateFromSelect.value = languageMap[data.detected_language] || "";
-            
+            translateFromSelect.value = data.detected_language;
             momBtn.disabled = false; goBtn.disabled = false;
             appStatus.innerHTML = `<span class="text-success"><i class="fa-solid fa-circle-check"></i> Asset parsing complete. ID Reference: ${currentRequestId}</span>`;
         } catch (err) {
-            appStatus.innerHTML = '<span class="text-danger"><i class="fa-solid fa-bug"></i> Whisper parsing core pipeline execution error.</span>';
-        } 
-        evaluateStateLocks();
-    }
-
-    async function finalizeSessionCapture() {
-        isRecordingLive = false;
-        pauseBtn.disabled = true;
-        transcribeBtn.disabled = true;
-        transcribeBtn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> Saving Session Logs...';
-        
-        const finalPayloadText = txtTranscript.value.trim();
-        if (finalPayloadText) {
-            await sendStreamPayloadToBackend(finalPayloadText);
-        } else {
-            appStatus.innerHTML = `<span class="text-warning"><i class="fa-solid fa-circle-exclamation"></i> Save aborted: Empty text buffer.</span>`;
-            evaluateStateLocks();
-        }
+            appStatus.innerHTML = '<span class="text-danger"><i class="fa-solid fa-bug"></i> Whisper parsing core module connection exception.</span>';
+        } evaluateStateLocks();
     }
 
     momBtn.addEventListener('click', async () => {
-        if (!currentRequestId) return;
         try {
             momBtn.disabled = true;
             momBtn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> Structuring...';
             const res = await fetch(`${API_URL}/api/generate-mom/${currentRequestId}`, { method: 'POST' });
+            
+            if (!res.ok) {
+                throw new Error("MOM generation endpoint failed");
+            }
+
             const data = await res.json();
-            txtAiOutput.value = data.mom;
-            appStatus.innerHTML = '<span class="text-success"><i class="fa-solid fa-circle-check"></i> MOM generated in standard English successfully.</span>';
-        } catch(e){} finally {
+            
+            // Critical verification step to explicitly guard against undefined responses
+            if (data && data.mom) {
+                txtAiOutput.value = data.mom;
+                appStatus.innerHTML = '<span class="text-success"><i class="fa-solid fa-circle-check"></i> MOM generated in standard English successfully.</span>';
+            } else {
+                txtAiOutput.value = "Warning: Received empty text packet from the database pipeline infrastructure.";
+            }
+        } catch(e) {
+            txtAiOutput.value = "Error: System failed to query historical table structures for this RequestID.";
+        } finally {
             momBtn.disabled = false;
             momBtn.innerHTML = '<i class="fa-solid fa-file-signature"></i> Generate MOM';
         }
     });
 
-   goBtn.addEventListener('click', async () => {
-        if (!currentRequestId || !translateToSelect.value) {
-            alert("Please ensure a transcription reference is loaded and a target language is selected.");
-            return;
-        }
-
-        // Visual loading updates
-        goBtn.disabled = true;
-        goBtn.innerHTML = '<i class="fa-solid fa-spinner fa-spin me-2"></i>Processing Local Translation...';
-        txtTranslation.value = "Running engine model calculations on system hardware... Please wait...";
-
+    goBtn.addEventListener('click', async () => {
         const formData = new FormData();
-        // Crucial alignment fix: form parameter key matches backend signature mapping
         formData.append("translate_to", translateToSelect.value);
-
         try {
-            const res = await fetch(`${API_URL}/api/translate/${currentRequestId}`, { 
-                method: 'POST', 
-                body: formData 
-            });
-            
-            if (!res.ok) {
-                const errorData = await res.json();
-                throw new Error(errorData.detail || "Translation Pipeline Error");
-            }
-            
+            const res = await fetch(`${API_URL}/api/translate/${currentRequestId}`, { method: 'POST', body: formData });
             const data = await res.json();
-            
-            // Render translated text cleanly inside the target pane view layer
             txtTranslation.value = data.translation;
-            appStatus.innerHTML = `<span class="text-success"><i class="fa-solid fa-circle-check"></i> System successfully updated local records for ID #${currentRequestId}.</span>`;
-        } catch(e) {
-            console.error(e);
-            txtTranslation.value = "Inference Error: " + e.message;
-            appStatus.innerHTML = `<span class="text-danger"><i class="fa-solid fa-circle-xmark"></i> Pipeline translation failed. Check terminal logs.</span>`;
-        } finally {
-            goBtn.disabled = false;
-            goBtn.innerHTML = '<i class="fa-solid fa-bolt me-2"></i>Execute Translation';
-        }
+        } catch(e){}
     });
 
     historyBtn.addEventListener('click', async () => {
