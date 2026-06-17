@@ -87,6 +87,8 @@
         .text-panel { background-color: #0b0f19 !important; color: #f1f5f9 !important; border: 1px solid rgba(255, 255, 255, 0.08) !important; height: 260px; resize: none; border-radius: 8px; font-size: 14px; line-height: 1.6; }
         .text-panel:focus { border-color: #38bdf8 !important; box-shadow: 0 0 0 2px rgba(56, 189, 248, 0.15); }
         
+        div.text-panel { overflow-y: auto; white-space: pre-wrap; }
+        
         .go-btn { background: #10b981; color: white; border: none; height: 50px; border-radius: 8px; font-weight: 600; width: 100%; transition: all 0.2s; }
         .go-btn:hover:not(:disabled) { background: #059669; }
         .go-btn:disabled { background: #1e293b; color: #64748b; cursor: not-allowed; }
@@ -161,7 +163,7 @@
         <div class="col-lg-6">
             <div class="glass card-glow p-3">
                 <div class="panel-title"><i class="fa-solid fa-file-invoice"></i>AI Generated Minutes of Meeting (English Translation)</div>
-                <textarea class="form-control text-panel" id="txtAiOutput" placeholder="MOM English conversion output appears here..." readonly></textarea>
+                <div class="form-control text-panel" id="txtAiOutput" contenteditable="true" placeholder="MOM English conversion output appears here..."></div>
             </div>
         </div>
     </div>
@@ -378,8 +380,7 @@
         const formData = new FormData();
         formData.append("text_content", textData);
         formData.append("participant_group", participantSelect.value);
-        
-        // Pass language code over to the server to populate dropdown tables safely
+        formData.append("source_type", "LIVE");
         formData.append("translate_from", micLanguageSelect.value);
 
         try {
@@ -424,15 +425,15 @@
 
             const data = await res.json();
             
-            // Critical verification step to explicitly guard against undefined responses
+            // MODIFIED: Inject strict raw plain text string utilizing .innerText assignment mapping rules
             if (data && data.mom) {
-                txtAiOutput.value = data.mom;
+                txtAiOutput.innerText = data.mom;
                 appStatus.innerHTML = '<span class="text-success"><i class="fa-solid fa-circle-check"></i> MOM generated in standard English successfully.</span>';
             } else {
-                txtAiOutput.value = "Warning: Received empty text packet from the database pipeline infrastructure.";
+                txtAiOutput.innerText = "Warning: Received empty text packet from the database pipeline infrastructure.";
             }
         } catch(e) {
-            txtAiOutput.value = "Error: System failed to query historical table structures for this RequestID.";
+            txtAiOutput.innerText = "Error: System failed to query historical table structures for this RequestID.";
         } finally {
             momBtn.disabled = false;
             momBtn.innerHTML = '<i class="fa-solid fa-file-signature"></i> Generate MOM';
@@ -459,7 +460,9 @@
                 const detailRes = await fetch(`${API_URL}/api/history/${id}`);
                 const detail = await detailRes.json();
                 txtTranscript.value = detail.transcription;
-                txtAiOutput.value = detail.mom;
+                
+                // MODIFIED: Updates text container component utilizing .innerText on structural lookups
+                txtAiOutput.innerText = detail.mom || "";
                 txtTranslation.value = detail.translation;
                 currentRequestId = id;
                 momBtn.disabled = false; goBtn.disabled = false;

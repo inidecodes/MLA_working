@@ -5,6 +5,8 @@ from fastapi.middleware.cors import CORSMiddleware
 import pyodbc
 import whisper
 import traceback 
+# Added official Google GenAI SDK import
+from google import genai
 
 app = FastAPI()
 
@@ -21,6 +23,9 @@ os.makedirs(TEMP_UPLOAD_DIR, exist_ok=True)
 
 print("Loading Open-Source Whisper Model Pipeline...")
 whisper_model = whisper.load_model("medium")
+
+# Initialize the Gemini Client (Reads GEMINI_API_KEY from environment)
+ai_client = genai.Client()
 
 DB_CONN_STR = (
     "DRIVER={ODBC Driver 17 for SQL Server};"
@@ -118,7 +123,6 @@ async def handle_live_save(
         cursor.execute("SELECT ISNULL(MAX(RequestID), 0) + 1 FROM GlbAIRequestDtl")
         new_req_id = cursor.fetchone()[0]
 
-        # FIXED: Changed string token to 'LIVE' to prevent truncation mismatch crash completely
         insert_req_query = """
             INSERT INTO [dbo].[GlbAIRequestDtl] 
             ([RequestID], [PromptID], [ReqType], [ReqPrompt], [ReqFileName], [ReqFileSize], [ReqFilePath], 
@@ -162,18 +166,41 @@ def generate_mom(request_id: int):
         
         transcript_text = row[0]
 
-        structured_mom = (
-            f"--- ENGLISH MINUTES OF MEETING ---\n"
-            f"Target Scope: Executive Real-Time Operations Sync Alignment\n\n"
-            f"Core Decisive Summary Log:\n"
-            f"- Reviewed discussion notes: \"{transcript_text[:200]}...\"\n\n"
-            f"System Directives:\n"
-            f"- Multi-language processing matrix aligned successfully to business logic summary rules."
+        # System prompt explicitly instructing plain text format generation mapping with zero wrappers
+        prompt_instruction = (
+            "You are an expert executive secretary assistant. Analyze the provided meeting transcript "
+            "and generate a professional Minutes of Meeting (MOM).\n\n"
+            "CRITICAL FORMAT RULES:\n"
+            "1. Output your response as completely RAW, CLEAN PLAIN TEXT ONLY.\n"
+            "2. Do NOT use markdown tags (No asterisks '**', no hashes '#', no backticks, no markdown syntax formatting wrappers).\n"
+            "3. Do NOT include html tags, span tags, or JSON.\n"
+            "4. Use plain line breaks and standard text layout rules.\n\n"
+            "The output must include exactly these structured sections:\n"
+            "Meeting Summary:\n[Write Summary text here]\n\n"
+            "Key Discussion Points:\n- [Point 1]\n- [Point 2]\n\n"
+            "Decisions Taken:\n- [Decision 1]\n\n"
+            "Action Items:\n- [Task] | Assignee: [Name] | Deadline: [Date]\n\n"
+            "Next Steps:\n- [Next step 1]\n\n"
+            f"Here is the meeting transcript:\n{transcript_text}"
         )
 
+        # Call Gemini API using the official Google GenAI Client package logic
+        response = ai_client.models.generate_content(
+            model='gemini-2.5-flash',
+            contents=prompt_instruction,
+        )
+        
+        structured_mom = response.text.strip()
+
+        # Update the database column ResHTML with the strict pure plain text MOM output payload
         cursor.execute("UPDATE GlbAIResponseDtl SET ResHTML = ? WHERE RequestID = ?", (structured_mom, request_id))
         conn.commit()
+        
         return {"mom": structured_mom}
+    except Exception as e:
+        if conn:
+            conn.rollback()
+        raise HTTPException(status_code=500, detail=f"LLM Processing/DB execution error: {str(e)}")
     finally:
         conn.close()
 
