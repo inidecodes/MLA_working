@@ -1,14 +1,14 @@
 import os
 import shutil
+import traceback
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 import pyodbc
 import whisper
-import traceback
+from transformers import pipeline  # ADDED: HuggingFace Pipeline Ingestion
 
 app = FastAPI()
 
-# Configure CORS so your frontend can communicate without browser blocking rules
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -20,9 +20,34 @@ app.add_middleware(
 TEMP_UPLOAD_DIR = "./temp_meeting_files"
 os.makedirs(TEMP_UPLOAD_DIR, exist_ok=True)
 
-# Loading localized Whisper module for high-accuracy asset file parsing
 print("Loading Open-Source Whisper Model Pipeline...")
 whisper_model = whisper.load_model("small")
+
+# =====================================================================
+# ADDED: LOCAL NLLB TRANSLATION PIPELINE INITIALIZATION
+# =====================================================================
+print("Loading Local Open-Source Translation Pipeline (Meta NLLB-200)...")
+try:
+    # Runs locally. Uses device=-1 for CPU processing. Change to 0 if an NVIDIA GPU is available.
+    translator_pipeline = pipeline(
+        "translation", 
+        model="facebook/nllb-200-distilled-600M", 
+        device=-1 
+    )
+    print("Local translation engine loaded successfully.")
+except Exception as e:
+    print(f"Error loading translation engine: {e}")
+    translator_pipeline = None
+
+# Mapping frontend LanguageMaster entries directly to valid NLLB-200 Language Token Codes
+NLLB_CODE_MAP = {
+    "English": "eng_Latn",
+    "Hindi": "hin_Deva",
+    "Tamil": "tam_Kshw",   # Maps to native Tamil Script Matrix
+    "Telugu": "tel_Telu",   # Maps to native Telugu Script Matrix
+    "Malayalam": "mal_Mlym",
+    "Kannada": "kan_Knda"
+}
 
 DB_CONN_STR = (
     "DRIVER={ODBC Driver 17 for SQL Server};"
@@ -32,8 +57,10 @@ DB_CONN_STR = (
 )
 
 def get_db_cursor():
+    """Helper to ensure connections are handled safely per request thread."""
     conn = pyodbc.connect(DB_CONN_STR)
     return conn, conn.cursor()
+
 
 @app.get("/api/dropdowns")
 def get_dropdowns():
@@ -52,19 +79,19 @@ def get_dropdowns():
     finally:
         conn.close()
 
+
 @app.post("/api/transcribe")
-async def transcribe_audio(
+def transcribe_audio(
     file: UploadFile = File(...),
     participant_group: str = Form(...),
     source_type: str = Form(...)
 ):
     conn, cursor = get_db_cursor()
+    file_path = os.path.join(TEMP_UPLOAD_DIR, file.filename)
     try:
-        file_path = os.path.join(TEMP_UPLOAD_DIR, file.filename)
         with open(file_path, "wb") as buffer:
             shutil.copyfileobj(file.file, buffer)
 
-        # Transcribe static audio files via structural local Whisper framework
         result = whisper_model.transcribe(file_path)
         transcription_text = result.get("text", "").strip()
         detected_lang = result.get("language", "en").upper()
@@ -85,9 +112,6 @@ async def transcribe_audio(
         )
         conn.commit()
 
-        if os.path.exists(file_path):
-            os.remove(file_path)
-
         return {
             "request_id": request_id,
             "transcription": transcription_text,
@@ -98,9 +122,12 @@ async def transcribe_audio(
         raise HTTPException(status_code=500, detail=str(e))
     finally:
         conn.close()
+        if os.path.exists(file_path):
+            os.remove(file_path)
+
 
 @app.post("/api/transcribe-stream")
-async def transcribe_stream(
+def transcribe_stream(
     text_content: str = Form(...),
     participant_group: str = Form(...),
     translate_from: str = Form("ENGLISH")
@@ -130,6 +157,7 @@ async def transcribe_stream(
     finally:
         conn.close()
 
+
 @app.post("/api/generate-mom/{request_id}")
 def generate_mom(request_id: int):
     conn, cursor = get_db_cursor()
@@ -141,7 +169,6 @@ def generate_mom(request_id: int):
         
         base_text = row[0]
         
-        # Build contextual Minutes of Meeting output based on real captured data streams
         mom_lines = [
             "==================================================",
             "        AI-GENERATED MINUTES OF MEETING (MOM)     ",
@@ -169,27 +196,57 @@ def generate_mom(request_id: int):
     finally:
         conn.close()
 
+
+# =====================================================================
+# MODIFIED: OPERATIONAL NLLB-200 LOCAL TRANSLATION PIPELINE ENDPOINT
+# =====================================================================
 @app.post("/api/translate/{request_id}")
 def translate_text_endpoint(request_id: int, translate_to: str = Form(...)):
+    if translator_pipeline is None:
+        raise HTTPException(status_code=500, detail="Translation model pipeline is unavailable.")
+
     conn, cursor = get_db_cursor()
     try:
+        # 1. Look up base text out of the Response Details Data Matrix
         cursor.execute("SELECT ResSummary FROM GlbAIResponseDtl WHERE RequestID = ?", (request_id,))
         row = cursor.fetchone()
-        if not row:
+        if not row or not row[0]:
             raise HTTPException(status_code=404, detail="Transcription content reference target missing.")
         
-        base_text = row[0]
-        translated_text = f"--- TRANSLATED TEXT TARGET SELECTION [{translate_to}] ---\n\n[Output]:\n{base_text}"
+        base_text = str(row[0]).strip()
 
+        # 2. Map structural text targets directly to NLLB internal language code tokens
+        target_lang_code = NLLB_CODE_MAP.get(translate_to)
+        if not target_lang_code:
+            raise HTTPException(
+                status_code=400, 
+                detail=f"Language selection '{translate_to}' is not configured in local engine mappings."
+            )
+        
+        # 3. Process the translation using local model inference
+        # max_length prevents clipping on extended meeting inputs
+        translation_res = translator_pipeline(
+            base_text, 
+            forced_bos_token_id=None, 
+            tgt_lang=target_lang_code, 
+            max_length=1024
+        )
+        translated_text = translation_res[0]['translation_text']
+
+        # 4. Commit and synchronize changes to the database
         cursor.execute("UPDATE GlbAIResponseDtl SET ResJSON = ? WHERE RequestID = ?", (translated_text, request_id))
         cursor.execute("UPDATE GlbAIRequestDtl SET TranslateTo = ? WHERE RequestID = ?", (translate_to, request_id))
         conn.commit()
+        
+        # 5. Return payload directly to the frontend context mapping layer
         return {"translation": translated_text}
+        
     except Exception as e:
         print(traceback.format_exc())
         raise HTTPException(status_code=500, detail=str(e))
     finally:
         conn.close()
+
 
 @app.get("/api/history")
 def get_history():
@@ -203,6 +260,7 @@ def get_history():
         raise HTTPException(status_code=500, detail=str(e))
     finally:
         conn.close()
+
 
 @app.get("/api/history/{request_id}")
 def get_history_detail(request_id: int):
