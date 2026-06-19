@@ -203,23 +203,68 @@ def generate_mom(request_id: int):
         raise HTTPException(status_code=500, detail=f"LLM Processing/DB execution error: {str(e)}")
     finally:
         conn.close()
-
+        
 @app.post("/api/translate/{request_id}")
 def translate_output(request_id: int, translate_to: str = Form(...)):
     conn, cursor = get_db_cursor()
     try:
-        cursor.execute("SELECT ResSummary FROM GlbAIResponseDtl WHERE RequestID = ?", (request_id,))
-        transcript_row = cursor.fetchone()
-        if not transcript_row:
-            raise HTTPException(status_code=404, detail="Record context matched empty.")
+        cursor.execute(
+            "SELECT ResHTML, ResSummary FROM GlbAIResponseDtl WHERE RequestID = ?",
+            (request_id,)
+        )
+        row = cursor.fetchone()
 
-        base_text = transcript_row[0]
-        translated_text = f"[{translate_to} Engine Translation View Template Output]:\n{base_text}"
+        if not row:
+            raise HTTPException(status_code=404, detail="No record found for the given RequestID.")
 
-        cursor.execute("UPDATE GlbAIResponseDtl SET ResJSON = ? WHERE RequestID = ?", (translated_text, request_id))
-        cursor.execute("UPDATE GlbAIRequestDtl SET TranslateTo = ? WHERE RequestID = ?", (translate_to, request_id))
-        conn.commit()
+        res_html = row[0]
+        res_summary = row[1]
+
+        base_text = (res_html if res_html and str(res_html).strip() else
+                     res_summary if res_summary and str(res_summary).strip() else
+                     None)
+
+        if not base_text:
+            raise HTTPException(
+                status_code=404,
+                detail="Both ResHTML and ResSummary are empty for this RequestID."
+            )
+
+        prompt = (
+            f"Translate the following text into {translate_to}.\n\n"
+            f"Rules:\n"
+            f"- Preserve the original structure and formatting exactly "
+            f"(section headers, bullet points, numbered lists, line breaks).\n"
+            f"- Output ONLY the translated text.\n"
+            f"- Do NOT add any preamble, explanation, meta-commentary, or markdown wrappers.\n\n"
+            f"Text to translate:\n{base_text}"
+        )
+
+        try:
+            response = ai_client.models.generate_content(
+                model='gemini-2.5-flash',
+                contents=prompt,
+            )
+            translated_text = response.text.strip()
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"Translation LLM call failed: {str(e)}")
+
+        try:
+            cursor.execute(
+                "UPDATE GlbAIResponseDtl SET ResJSON = ? WHERE RequestID = ?",
+                (translated_text, request_id)
+            )
+            cursor.execute(
+                "UPDATE GlbAIRequestDtl SET TranslateTo = ? WHERE RequestID = ?",
+                (translate_to, request_id)
+            )
+            conn.commit()
+        except Exception as e:
+            conn.rollback()
+            raise HTTPException(status_code=500, detail=f"Database update failed: {str(e)}")
+
         return {"translation": translated_text}
+
     finally:
         conn.close()
 
